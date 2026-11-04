@@ -66,3 +66,30 @@ def test_parallel_decode_preserves_mainline_output_format():
     assert metadata["camera_ceiling.encoding"] == "rgb8"
     assert metadata["camera_ceiling.height"] == 2
     assert metadata["camera_ceiling.width"] == 3
+
+
+def test_three_camera_observation_omits_unused_views():
+    camera_names = [
+        "camera_head_right",
+        "camera_wrist_left",
+        "camera_wrist_right",
+    ]
+    observation = {
+        "arm_right": {"value": pa.array([1.0], type=pa.float32())},
+        "arm_left": {"value": pa.array([2.0], type=pa.float32())},
+        "id": 3,
+        **{name: _camera_event(i) for i, name in enumerate(camera_names)},
+    }
+
+    with ThreadPoolExecutor(max_workers=3) as decode_pool:
+        output = _build_output(
+            observation, None, "pick", {}, decode_pool, camera_names
+        )
+
+    assert output.type.names == [
+        "position",
+        *camera_names,
+        "phase_classifier_result",
+        "task_prompt",
+        "id",
+    ]

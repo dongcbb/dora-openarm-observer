@@ -22,18 +22,23 @@ import os
 import pyarrow as pa
 import time
 
+_CAMERA_NAMES = (
+    "camera_wrist_right",
+    "camera_wrist_left",
+    "camera_head_left",
+    "camera_head_right",
+    "camera_ceiling",
+)
 
-def _reset_observation(observation, arms):
+
+def _reset_observation(observation, arms, camera_names=_CAMERA_NAMES):
     """Initialize/reset observations to None and ID to 0."""
     if "right" in arms:
         observation["arm_right"] = None
-        observation["camera_wrist_right"] = None
     if "left" in arms:
         observation["arm_left"] = None
-        observation["camera_wrist_left"] = None
-    observation["camera_head_left"] = None
-    observation["camera_head_right"] = None
-    observation["camera_ceiling"] = None
+    for camera_name in camera_names:
+        observation[camera_name] = None
     observation["id"] = 0
 
 
@@ -45,7 +50,12 @@ def _decode_camera(encoded):
 
 
 def _build_output(
-    observation, phase_classifier_result, task_prompt, metadata, decode_pool
+    observation,
+    phase_classifier_result,
+    task_prompt,
+    metadata,
+    decode_pool,
+    camera_names=None,
 ):
     """Convert observation to Apache Arrow data and fill metadata.
 
@@ -86,12 +96,9 @@ def _build_output(
     )
     names.append("position")
 
-    camera_names = []
-    if "camera_wrist_right" in observation:
-        camera_names.append("camera_wrist_right")
-    if "camera_wrist_left" in observation:
-        camera_names.append("camera_wrist_left")
-    camera_names.extend(["camera_head_left", "camera_head_right", "camera_ceiling"])
+    camera_names = camera_names or [
+        name for name in _CAMERA_NAMES if name in observation
+    ]
     decode_futures = {
         name: decode_pool.submit(
             _decode_camera,
@@ -138,14 +145,27 @@ def main():
         type=int,
         help="Number of persistent JPEG decode workers (default: 4)",
     )
+    parser.add_argument(
+        "--cameras",
+        default=",".join(_CAMERA_NAMES),
+        help="Comma-separated camera event IDs to include in observations",
+    )
     args = parser.parse_args()
     if args.decode_workers <= 0:
         raise ValueError("--decode-workers must be positive")
 
     arms = args.arms.split(",")
+    camera_names = [name.strip() for name in args.cameras.split(",") if name.strip()]
+    if not camera_names:
+        raise ValueError("--cameras must include at least one camera")
+    if len(camera_names) != len(set(camera_names)):
+        raise ValueError("--cameras must not contain duplicates")
+    unknown_cameras = set(camera_names) - set(_CAMERA_NAMES)
+    if unknown_cameras:
+        raise ValueError(f"Unknown camera event IDs: {sorted(unknown_cameras)}")
     node = dora.Node()
     observation = {}
-    _reset_observation(observation, arms)
+    _reset_observation(observation, arms, camera_names)
     cv2.setNumThreads(1)
     decode_pool = ThreadPoolExecutor(
         max_workers=args.decode_workers,
@@ -173,7 +193,7 @@ def main():
                     or ("left" in arms and last_arm_left_status == "stopped")
                     or command_status == "stopped"
                 ):
-                    _reset_observation(observation, arms)
+                    _reset_observation(observation, arms, camera_names)
                     continue
                 metadata = {
                     "episode_number": episode_number,
@@ -185,6 +205,7 @@ def main():
                     last_task_prompt,
                     metadata,
                     decode_pool,
+                    camera_names,
                 )
                 node.send_output(
                     "observation",
